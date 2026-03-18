@@ -1,13 +1,16 @@
 package com.workerrobotics.sftpserver.service;
 
+import com.workerrobotics.sftpserver.config.KerberosProperties;
 import com.workerrobotics.sftpserver.config.SftpProperties;
 import com.workerrobotics.sftpserver.model.SftpServerConfig;
 import org.apache.sshd.common.file.virtualfs.VirtualFileSystemFactory;
 import org.apache.sshd.common.keyprovider.KeyPairProvider;
-import org.apache.sshd.common.session.SessionContext;
 import org.apache.sshd.core.CoreModuleProperties;
 import org.apache.sshd.server.SshServer;
+import org.apache.sshd.server.auth.UserAuthFactory;
+import org.apache.sshd.server.auth.gss.UserAuthGSSFactory;
 import org.apache.sshd.server.auth.password.PasswordAuthenticator;
+import org.apache.sshd.server.auth.password.UserAuthPasswordFactory;
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
 import org.apache.sshd.sftp.server.SftpSubsystemFactory;
 import org.slf4j.Logger;
@@ -19,14 +22,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
-/**
- * Beheert de levenscyclus van de Apache Mina SSHD SFTP-server.
- * De server kan worden gestart, gestopt en herladen via de REST-API.
- */
 @Service
 public class SftpServerService {
 
@@ -34,6 +34,8 @@ public class SftpServerService {
 
     private final SftpProperties properties;
     private final UserRegistryService userRegistry;
+    private final KerberosProperties kerberosProperties;
+    private final ApplicationGssAuthenticator gssAuthenticator;
 
     private SshServer sshServer;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -41,9 +43,16 @@ public class SftpServerService {
 
     private volatile SftpServerConfig currentConfig;
 
-    public SftpServerService(SftpProperties properties, UserRegistryService userRegistry) {
+    public SftpServerService(
+            SftpProperties properties,
+            UserRegistryService userRegistry,
+            KerberosProperties kerberosProperties,
+            ApplicationGssAuthenticator gssAuthenticator
+    ) {
         this.properties = properties;
         this.userRegistry = userRegistry;
+        this.kerberosProperties = kerberosProperties;
+        this.gssAuthenticator = gssAuthenticator;
         this.currentConfig = new SftpServerConfig(
                 properties.getPort(),
                 properties.getRootDirectory(),
@@ -53,12 +62,6 @@ public class SftpServerService {
         );
     }
 
-    /**
-     * Start de SFTP-server met de huidige configuratie.
-     *
-     * @throws IOException als de server niet gestart kan worden
-     * @throws IllegalStateException als de server al actief is
-     */
     public void start() throws IOException {
         serverLock.lock();
         try {
@@ -74,12 +77,6 @@ public class SftpServerService {
         }
     }
 
-    /**
-     * Stopt de actieve SFTP-server.
-     *
-     * @throws IOException als de server niet gestopt kan worden
-     * @throws IllegalStateException als de server niet actief is
-     */
     public void stop() throws IOException {
         serverLock.lock();
         try {
@@ -95,12 +92,6 @@ public class SftpServerService {
         }
     }
 
-    /**
-     * Herlaadt de server met een nieuwe configuratie (stop + start).
-     *
-     * @param config de nieuwe configuratie
-     * @throws IOException als de server niet herladen kan worden
-     */
     public void reload(SftpServerConfig config) throws IOException {
         serverLock.lock();
         try {
@@ -124,23 +115,14 @@ public class SftpServerService {
         }
     }
 
-    /**
-     * Geeft de huidige configuratie terug.
-     */
     public SftpServerConfig getConfig() {
         return currentConfig;
     }
 
-    /**
-     * Geeft aan of de server actief is.
-     */
     public boolean isRunning() {
         return running.get();
     }
 
-    /**
-     * Bouwt een geconfigureerde SshServer instantie.
-     */
     private SshServer buildServer(SftpServerConfig config) throws IOException {
         Path rootDir = Paths.get(config.rootDirectory()).toAbsolutePath();
         Files.createDirectories(rootDir);
@@ -148,25 +130,62 @@ public class SftpServerService {
         SshServer server = SshServer.setUpDefaultServer();
         server.setPort(config.port());
         server.setKeyPairProvider(buildKeyProvider());
-        server.setPasswordAuthenticator(buildPasswordAuthenticator());
         server.setSubsystemFactories(List.of(new SftpSubsystemFactory()));
         server.setFileSystemFactory(buildFileSystemFactory(rootDir));
 
+        configureAuthentication(server);
+
         if (config.idleTimeoutSeconds() > 0) {
-            CoreModuleProperties.IDLE_TIMEOUT.set(
-                    server,
-                    Duration.ofSeconds(config.idleTimeoutSeconds())
-            );
+            CoreModuleProperties.IDLE_TIMEOUT.set(server, Duration.ofSeconds(config.idleTimeoutSeconds()));
         }
 
         if (config.authTimeoutSeconds() > 0) {
-            CoreModuleProperties.AUTH_TIMEOUT.set(
-                    server,
-                    Duration.ofSeconds(config.authTimeoutSeconds())
-            );
+            CoreModuleProperties.AUTH_TIMEOUT.set(server, Duration.ofSeconds(config.authTimeoutSeconds()));
         }
 
         return server;
+    }
+
+    private void configureAuthentication(SshServer server) {
+        List<UserAuthFactory> authFactories = new ArrayList<>();
+
+        if (kerberosProperties.isEnabled()) {
+            validateKerberosSetup();
+            server.setGSSAuthenticator(gssAuthenticator);
+            authFactories.add(UserAuthGSSFactory.INSTANCE);
+            log.info("Kerberos/GSSAPI authenticatie ingeschakeld voor principal {}", kerberosProperties.getServicePrincipal());
+        }
+
+        if (!kerberosProperties.isEnabled() || kerberosProperties.isPasswordFallback()) {
+            server.setPasswordAuthenticator(buildPasswordAuthenticator());
+            authFactories.add(UserAuthPasswordFactory.INSTANCE);
+            log.info("Password authenticatie ingeschakeld");
+        }
+
+        if (authFactories.isEmpty()) {
+            throw new IllegalStateException("Geen authenticatiemethode geconfigureerd");
+        }
+
+        server.setUserAuthFactories(authFactories);
+    }
+
+    private void validateKerberosSetup() {
+        if (kerberosProperties.getServicePrincipal() == null || kerberosProperties.getServicePrincipal().isBlank()) {
+            throw new IllegalStateException("Kerberos is actief maar sftp.kerberos.service-principal ontbreekt");
+        }
+
+        if (kerberosProperties.getKeytab() == null || kerberosProperties.getKeytab().isBlank()) {
+            throw new IllegalStateException("Kerberos is actief maar sftp.kerberos.keytab ontbreekt");
+        }
+
+        Path keytabPath = Paths.get(kerberosProperties.getKeytab()).toAbsolutePath();
+        if (!Files.exists(keytabPath)) {
+            throw new IllegalStateException("Kerberos keytab bestaat niet: " + keytabPath);
+        }
+
+        if (!Files.isReadable(keytabPath)) {
+            throw new IllegalStateException("Kerberos keytab is niet leesbaar: " + keytabPath);
+        }
     }
 
     private KeyPairProvider buildKeyProvider() {
@@ -183,7 +202,6 @@ public class SftpServerService {
 
     private VirtualFileSystemFactory buildFileSystemFactory(Path rootDir) {
         VirtualFileSystemFactory factory = new VirtualFileSystemFactory(rootDir);
-        // Stel per-gebruiker homedirectory in als die is geconfigureerd
         userRegistry.findAll().forEach(user -> {
             if (user.homeDirectory() != null && !user.homeDirectory().isBlank()) {
                 Path userHome = rootDir.resolve(user.homeDirectory());

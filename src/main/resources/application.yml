@@ -1,0 +1,13 @@
+sftp:
+  port: 2222
+  root-directory: ./data/sftp-root
+  idle-timeout-seconds: 300
+  auth-timeout-seconds: 60
+  max-sessions: 25
+
+  kerberos:
+    enabled: true
+    service-principal: host/sftp.example.local@EXAMPLE.LOCAL
+    keytab: /etc/security/keytabs/sftp.keytab
+    password-fallback: true
+    realm: EXAMPLE.LOCAL

@@ -1,9 +1,14 @@
 package com.workerrobotics.sftpserver.service;
 
+import com.workerrobotics.sftpserver.config.KerberosProperties;
 import com.workerrobotics.sftpserver.config.SftpProperties;
 import com.workerrobotics.sftpserver.model.SftpServerConfig;
 import com.workerrobotics.sftpserver.model.SftpUser;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -25,6 +30,7 @@ class SftpServerServiceTest {
     private SftpServerService service;
     private UserRegistryService userRegistry;
     private SftpProperties properties;
+    private KerberosProperties kerberosProperties;
 
     // Gebruik een hoge poort om rechtenconflicten te vermijden; let op: tests lopen sequentieel
     private static final int BASE_PORT = 22200;
@@ -44,7 +50,16 @@ class SftpServerServiceTest {
         userRegistry = new UserRegistryService();
         userRegistry.addOrUpdate(SftpUser.of("testuser", "testpass", null));
 
-        service = new SftpServerService(properties, userRegistry);
+        kerberosProperties = new KerberosProperties();
+        kerberosProperties.setEnabled(false);
+        kerberosProperties.setPasswordFallback(true);
+
+        service = new SftpServerService(
+                properties,
+                userRegistry,
+                kerberosProperties,
+                null
+        );
     }
 
     @AfterEach
