@@ -11,3 +11,8 @@ sftp:
     keytab: /etc/security/keytabs/sftp.keytab
     password-fallback: true
     realm: EXAMPLE.LOCAL
+
+  public-key:
+    enabled: true
+    authorized-keys-directory: ./data/authorized_keys
+    password-fallback: true

@@ -1,6 +1,7 @@
 package com.workerrobotics.sftpserver.service;
 
 import com.workerrobotics.sftpserver.config.KerberosProperties;
+import com.workerrobotics.sftpserver.config.PublicKeyAuthProperties;
 import com.workerrobotics.sftpserver.config.SftpProperties;
 import com.workerrobotics.sftpserver.model.SftpServerConfig;
 import com.workerrobotics.sftpserver.model.SftpUser;
@@ -31,6 +32,7 @@ class SftpServerServiceTest {
     private UserRegistryService userRegistry;
     private SftpProperties properties;
     private KerberosProperties kerberosProperties;
+    private PublicKeyAuthProperties publicKeyAuthProperties;
 
     // Gebruik een hoge poort om rechtenconflicten te vermijden; let op: tests lopen sequentieel
     private static final int BASE_PORT = 22200;
@@ -54,10 +56,16 @@ class SftpServerServiceTest {
         kerberosProperties.setEnabled(false);
         kerberosProperties.setPasswordFallback(true);
 
+        publicKeyAuthProperties = new PublicKeyAuthProperties();
+        publicKeyAuthProperties.setEnabled(false);
+        publicKeyAuthProperties.setPasswordFallback(true);
+
         service = new SftpServerService(
                 properties,
                 userRegistry,
                 kerberosProperties,
+                null,
+                publicKeyAuthProperties,
                 null
         );
     }

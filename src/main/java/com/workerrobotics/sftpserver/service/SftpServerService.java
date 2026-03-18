@@ -12,6 +12,8 @@ import org.apache.sshd.server.auth.gss.UserAuthGSSFactory;
 import org.apache.sshd.server.auth.password.PasswordAuthenticator;
 import org.apache.sshd.server.auth.password.UserAuthPasswordFactory;
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
+import com.workerrobotics.sftpserver.config.PublicKeyAuthProperties;
+import org.apache.sshd.server.auth.pubkey.UserAuthPublicKeyFactory;
 import org.apache.sshd.sftp.server.SftpSubsystemFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +38,8 @@ public class SftpServerService {
     private final UserRegistryService userRegistry;
     private final KerberosProperties kerberosProperties;
     private final ApplicationGssAuthenticator gssAuthenticator;
+    private final PublicKeyAuthProperties publicKeyAuthProperties;
+    private final ApplicationPublickeyAuthenticator publickeyAuthenticator;
 
     private SshServer sshServer;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -47,12 +51,16 @@ public class SftpServerService {
             SftpProperties properties,
             UserRegistryService userRegistry,
             KerberosProperties kerberosProperties,
-            ApplicationGssAuthenticator gssAuthenticator
+            ApplicationGssAuthenticator gssAuthenticator,
+            PublicKeyAuthProperties publicKeyAuthProperties,
+            ApplicationPublickeyAuthenticator publickeyAuthenticator
     ) {
         this.properties = properties;
         this.userRegistry = userRegistry;
         this.kerberosProperties = kerberosProperties;
         this.gssAuthenticator = gssAuthenticator;
+        this.publicKeyAuthProperties = publicKeyAuthProperties;
+        this.publickeyAuthenticator = publickeyAuthenticator;
         this.currentConfig = new SftpServerConfig(
                 properties.getPort(),
                 properties.getRootDirectory(),
@@ -153,10 +161,24 @@ public class SftpServerService {
             validateKerberosSetup();
             server.setGSSAuthenticator(gssAuthenticator);
             authFactories.add(UserAuthGSSFactory.INSTANCE);
-            log.info("Kerberos/GSSAPI authenticatie ingeschakeld voor principal {}", kerberosProperties.getServicePrincipal());
+            log.info("Kerberos/GSSAPI authenticatie ingeschakeld voor principal {}",
+                    kerberosProperties.getServicePrincipal());
         }
 
-        if (!kerberosProperties.isEnabled() || kerberosProperties.isPasswordFallback()) {
+        if (publicKeyAuthProperties.isEnabled()) {
+            validatePublicKeySetup();
+            server.setPublickeyAuthenticator(publickeyAuthenticator);
+            authFactories.add(UserAuthPublicKeyFactory.INSTANCE);
+            log.info("SSH public key authenticatie ingeschakeld met directory {}",
+                    Paths.get(publicKeyAuthProperties.getAuthorizedKeysDirectory()).toAbsolutePath());
+        }
+
+        boolean passwordAllowed =
+                (!kerberosProperties.isEnabled() && !publicKeyAuthProperties.isEnabled())
+                        || kerberosProperties.isPasswordFallback()
+                        || publicKeyAuthProperties.isPasswordFallback();
+
+        if (passwordAllowed) {
             server.setPasswordAuthenticator(buildPasswordAuthenticator());
             authFactories.add(UserAuthPasswordFactory.INSTANCE);
             log.info("Password authenticatie ingeschakeld");
@@ -185,6 +207,31 @@ public class SftpServerService {
 
         if (!Files.isReadable(keytabPath)) {
             throw new IllegalStateException("Kerberos keytab is niet leesbaar: " + keytabPath);
+        }
+    }
+
+    private void validatePublicKeySetup() {
+        if (publicKeyAuthProperties.getAuthorizedKeysDirectory() == null
+                || publicKeyAuthProperties.getAuthorizedKeysDirectory().isBlank()) {
+            throw new IllegalStateException(
+                    "Public key authenticatie is actief maar sftp.public-key.authorized-keys-directory ontbreekt"
+            );
+        }
+
+        Path dir = Paths.get(publicKeyAuthProperties.getAuthorizedKeysDirectory()).toAbsolutePath();
+
+        try {
+            Files.createDirectories(dir);
+        } catch (IOException e) {
+            throw new IllegalStateException("Kon authorized_keys directory niet aanmaken: " + dir, e);
+        }
+
+        if (!Files.isDirectory(dir)) {
+            throw new IllegalStateException("Authorized keys pad is geen directory: " + dir);
+        }
+
+        if (!Files.isReadable(dir)) {
+            throw new IllegalStateException("Authorized keys directory is niet leesbaar: " + dir);
         }
     }
 
